@@ -9,55 +9,49 @@ import (
 	"strings"
 )
 
-// Var struct
-type Var struct {
-	Name     string
-	Key      string
-	Type     reflect.Type
-	Value    reflect.Value
-	Required bool
-	Default  reflect.Value
-	Options  []reflect.Value
+type envVar struct {
+	key       string
+	keyPrefix string
+	required  bool
+	default_  reflect.Value
+	options   []reflect.Value
 }
 
-// NewVar returns a new Var
-func NewVar(field reflect.StructField) (*Var, error) {
-	// spew.Dump(new(Var).Default == reflect.ValueOf(nil))
-	newVar := &Var{} //Default: reflect.ValueOf(nil)}
-	newVar.Parse(field)
+// getVal returns a reflect.Value filled in with the associated
+// environment variable or default.
+func getVal(keyPrefix string, field reflect.StructField) (reflect.Value, error) {
+	newVar := &envVar{keyPrefix: keyPrefix} //Default: reflect.ValueOf(nil)}
+	newVar.parse(field)
 
-	value, err := convert(newVar.Type, os.Getenv(newVar.Key))
+	value, err := convert(field.Type, os.Getenv(newVar.key))
 	if err != nil {
-		return newVar, err
+		return value, err
 	}
-	newVar.SetValue(value)
 
 	if value == reflect.ValueOf(nil) {
-		if newVar.Required {
-			return newVar, fmt.Errorf("%s required", newVar.Key)
+		if newVar.required {
+			return value, fmt.Errorf("%s required", newVar.key)
 		}
 
 		// Check if we have a default value to set, otherwise set the type's zero value
-		if newVar.Default != reflect.ValueOf(nil) {
-			// fmt.Println("setting default:", newVar.Default.String())
-			newVar.SetValue(newVar.Default)
+		if newVar.default_ != reflect.ValueOf(nil) {
+			value = newVar.default_
 		} else {
-			// fmt.Println("No default; setting zero value")
-			newVar.SetValue(reflect.Zero(newVar.Type))
+			value = reflect.Zero(field.Type)
 		}
 	}
 
-	if len(newVar.Options) > 0 {
-		if !newVar.optionsContains(newVar.Value) {
-			return newVar, fmt.Errorf(`%v="%v" not in allowed options: %v`, newVar.Key, newVar.Value, newVar.Options)
+	if len(newVar.options) > 0 {
+		if !newVar.optionsContains(value) {
+			return value, fmt.Errorf(`%v="%v" not in allowed options: %v`, newVar.key, value, newVar.options)
 		}
 	}
 
-	return newVar, nil
+	return value, nil
 }
 
-func (v *Var) optionsContains(s reflect.Value) bool {
-	for _, v := range v.Options {
+func (v *envVar) optionsContains(s reflect.Value) bool {
+	for _, v := range v.options {
 		if s.Interface() == v.Interface() {
 			return true
 		}
@@ -65,52 +59,9 @@ func (v *Var) optionsContains(s reflect.Value) bool {
 	return false
 }
 
-// SetValue sets Var.Value
-func (v *Var) SetValue(value reflect.Value) {
-	v.Value = value
-}
-
-// SetName sets Var.Name
-func (v *Var) SetName(value string) {
-	v.Name = value
-}
-
-// SetType sets Var.Type
-func (v *Var) SetType(value reflect.Type) {
-	v.Type = value
-}
-
-// SetRequired sets Var.Required
-func (v *Var) SetRequired(value bool) {
-	v.Required = value
-}
-
-// SetDefault sets Var.Default
-func (v *Var) SetDefault(value reflect.Value) {
-	v.Default = value
-}
-
-// SetOptions sets Var.Options
-func (v *Var) SetOptions(values []reflect.Value) {
-	v.Options = values
-}
-
-// SetKey sets Var.Key
-func (v *Var) SetKey(value string) {
-	// src := []byte(value)
-	// regex := regexp.MustCompile("[0-9A-Za-z]+")
-	// chunks := regex.FindAll(src, -1)
-	// for i, val := range chunks {
-	//
-	// }
-	v.Key = strings.ToUpper(value)
-}
-
-// Parse parses the struct tags of each field
-func (v *Var) Parse(field reflect.StructField) error {
-	v.SetName(field.Name)
-	v.SetType(field.Type)
-	v.SetKey(v.Name)
+// parse parses the struct tags of the given field.
+func (v *envVar) parse(field reflect.StructField) error {
+	key := field.Name
 
 	tag := field.Tag.Get("env")
 
@@ -120,43 +71,40 @@ func (v *Var) Parse(field reflect.StructField) error {
 
 	tagParams := strings.Split(tag, " ")
 	for _, tagParam := range tagParams {
-		var key, value string
+		var param, value string
 
 		option := strings.Split(tagParam, "=")
-		key = option[0]
+		param = option[0]
 		if len(option) > 1 {
 			value = option[1]
 		}
 
-		switch key {
+		switch param {
 		case "key":
-			// override the default key if one is specified
-			v.SetKey(value)
+			key = value
 		case "required":
-			// val, _ := strconv.ParseBool(value)
-			// if val != false {
-			v.SetRequired(true)
-			// }
+			v.required = true
 		case "default":
-			d, err := convert(v.Type, value)
+			d, err := convert(field.Type, value)
 			if err != nil {
 				return err
 			}
-			v.SetDefault(d)
+			v.default_ = d
 		case "options":
 			in := strings.Split(value, ",")
-			// var values []reflect.Value
 			values := make([]reflect.Value, len(in))
 			for k, val := range in {
-				v1, err := convert(v.Type, val)
+				v1, err := convert(field.Type, val)
 				if err != nil {
 					return err
 				}
 				values[k] = v1
 			}
-			v.SetOptions(values)
+			v.options = values
 		}
 	}
+
+	v.key = strings.ToUpper(v.keyPrefix + key)
 
 	return nil
 }
@@ -171,9 +119,6 @@ func convert(t reflect.Type, value string) (reflect.Value, error) {
 	switch t.Kind() {
 	case reflect.String:
 		return reflect.ValueOf(value), nil
-		// ptr.Elem()
-		// ptr = reflect.ValueOf(value).Elem().Convert(reflect.String)
-		// return reflect.ValueOf(value), nil
 	case reflect.Int:
 		return parseInt(value)
 	case reflect.Bool:
